@@ -81,6 +81,33 @@ function isEmojiGrapheme(g: string): boolean {
   return emojiPresentationRe.test(g) || g.includes('\uFE0F')
 }
 
+const emojiCorrectionCache = new Map<string, number>()
+
+function getEmojiCorrection(font: string, fontSize: number): number {
+  let correction = emojiCorrectionCache.get(font)
+  if (correction !== undefined) return correction
+
+  ctx.font = font
+  const canvasW = ctx.measureText('\u{1F600}').width
+  correction = 0
+  if (canvasW > fontSize + 0.5) {
+    const span = document.createElement('span')
+    span.style.font = font
+    span.style.display = 'inline-block'
+    span.style.visibility = 'hidden'
+    span.style.position = 'absolute'
+    span.textContent = '\u{1F600}'
+    document.body.appendChild(span)
+    const domW = span.getBoundingClientRect().width
+    document.body.removeChild(span)
+    if (canvasW - domW > 0.5) {
+      correction = canvasW - domW
+    }
+  }
+  emojiCorrectionCache.set(font, correction)
+  return correction
+}
+
 function countEmojiGraphemes(text: string, segmenter: Intl.Segmenter): number {
   let count = 0
   for (const g of segmenter.segment(text)) {
@@ -365,10 +392,11 @@ export function prepare(text: string, font: string, lineHeight?: number): Prepar
     lineHeight = Math.round(fontSize * 1.2)
   }
 
-  // Auto-detect emoji canvas inflation. On Chrome/Firefox macOS, canvas measures
-  // emoji wider than DOM at small sizes. Correction is 0 on Safari or ≥24px.
-  const emojiCanvasW = ctx.measureText('\u{1F600}').width
-  const emojiCorrection = emojiCanvasW > fontSize + 0.5 ? emojiCanvasW - fontSize : 0
+  // Auto-detect emoji canvas inflation. Chrome/Firefox canvas measures emoji wider
+  // than DOM at small sizes. Safari canvas and DOM agree (both wider than fontSize).
+  // Compare canvas vs actual DOM width — not fontSize — to detect the discrepancy.
+  // Cached per font string since the correction is a browser+font property.
+  const emojiCorrection = getEmojiCorrection(font, fontSize)
 
   // CSS white-space: normal collapses newlines to spaces. For pre-wrap behavior,
   // callers should split on \n and prepare each paragraph separately.
@@ -601,4 +629,5 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight?: nu
 
 export function clearCache(): void {
   wordCaches.clear()
+  emojiCorrectionCache.clear()
 }
