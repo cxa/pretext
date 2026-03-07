@@ -11,6 +11,11 @@ const WIDTH_BEFORE = 400
 const WIDTH_AFTER = 300
 const WARMUP = 2
 const RUNS = 10
+const PREPARE_SAMPLE_REPEATS = 1
+const LAYOUT_SAMPLE_REPEATS = 200
+const LAYOUT_SAMPLE_WIDTHS = [200, 250, 300, 350, 400] as const
+const DOM_BATCH_SAMPLE_REPEATS = 1
+const DOM_INTERLEAVED_SAMPLE_REPEATS = 1
 
 // Filter edge cases — not realistic comments
 const commentTexts = TEXTS.filter(t => t.text.trim().length > 1)
@@ -25,13 +30,19 @@ function median(times: number[]): number {
   return sorted.length % 2 === 0 ? (sorted[mid - 1]! + sorted[mid]!) / 2 : sorted[mid]!
 }
 
-function bench(fn: () => void): number {
-  for (let i = 0; i < WARMUP; i++) fn()
+function bench(fn: (repeatIndex: number) => void, sampleRepeats = 1): number {
+  function runRepeated(): void {
+    for (let r = 0; r < sampleRepeats; r++) {
+      fn(r)
+    }
+  }
+
+  for (let i = 0; i < WARMUP; i++) runRepeated()
   const times: number[] = []
   for (let i = 0; i < RUNS; i++) {
     const t0 = performance.now()
-    fn()
-    times.push(performance.now() - t0)
+    runRepeated()
+    times.push((performance.now() - t0) / sampleRepeats)
   }
   return median(times)
 }
@@ -43,6 +54,10 @@ function nextFrame(): Promise<void> {
 
 async function run() {
   const root = document.getElementById('root')!
+  let topLayoutSink = 0
+  let scalingLayoutSink = 0
+  let domBatchSink = 0
+  let domInterleavedSink = 0
 
   // Create visible DOM container
   const container = document.createElement('div')
@@ -81,18 +96,22 @@ async function run() {
     for (let i = 0; i < COUNT; i++) {
       prepare(texts[i]!, FONT)
     }
-  })
-  results.push({ label: 'Our library: prepare()', ms: tPrepare, desc: 'Segment + measure (one-time)' })
+  }, PREPARE_SAMPLE_REPEATS)
+  results.push({ label: 'Our library: prepare()', ms: tPrepare, desc: `One cold ${COUNT}-text measurement batch` })
 
   // --- 2. layout() ---
   root.innerHTML = '<p>Benchmarking layout()...</p>'
   await nextFrame()
-  const tLayout = bench(() => {
+  const tLayout = bench(repeatIndex => {
+    const maxWidth = LAYOUT_SAMPLE_WIDTHS[repeatIndex % LAYOUT_SAMPLE_WIDTHS.length]!
+    let sum = 0
     for (let i = 0; i < COUNT; i++) {
-      layout(prepared[i]!, WIDTH_AFTER, LINE_HEIGHT)
+      const result = layout(prepared[i]!, maxWidth, LINE_HEIGHT)
+      sum += result.height + result.lineCount
     }
-  })
-  results.push({ label: 'Our library: layout()', ms: tLayout, desc: 'Pure arithmetic (resize hot path)' })
+    topLayoutSink += sum + repeatIndex
+  }, LAYOUT_SAMPLE_REPEATS)
+  results.push({ label: 'Our library: layout()', ms: tLayout, desc: `Normalized hot-path throughput per ${COUNT}-text batch` })
 
   // --- 3. DOM batch ---
   root.innerHTML = '<p>Benchmarking DOM batch...</p>'
@@ -100,12 +119,14 @@ async function run() {
   for (const div of divs) div.style.width = `${WIDTH_BEFORE}px`
   divs[0]!.getBoundingClientRect()
   const tBatch = bench(() => {
+    let sum = 0
     for (let i = 0; i < COUNT; i++) divs[i]!.style.width = `${WIDTH_AFTER}px`
-    for (let i = 0; i < COUNT; i++) divs[i]!.getBoundingClientRect().height
+    for (let i = 0; i < COUNT; i++) sum += divs[i]!.getBoundingClientRect().height
     for (let i = 0; i < COUNT; i++) divs[i]!.style.width = `${WIDTH_BEFORE}px`
     divs[0]!.getBoundingClientRect()
-  })
-  results.push({ label: 'DOM batch', ms: tBatch, desc: 'Write all, read all (one reflow)' })
+    domBatchSink += sum
+  }, DOM_BATCH_SAMPLE_REPEATS)
+  results.push({ label: 'DOM batch', ms: tBatch, desc: `Single ${WIDTH_BEFORE}→${WIDTH_AFTER}px batch resize: write all, then read all` })
 
   // --- 4. DOM interleaved ---
   root.innerHTML = '<p>Benchmarking DOM interleaved...</p>'
@@ -113,14 +134,16 @@ async function run() {
   for (const div of divs) div.style.width = `${WIDTH_BEFORE}px`
   divs[0]!.getBoundingClientRect()
   const tInterleaved = bench(() => {
+    let sum = 0
     for (let i = 0; i < COUNT; i++) {
       divs[i]!.style.width = `${WIDTH_AFTER}px`
-      divs[i]!.getBoundingClientRect().height
+      sum += divs[i]!.getBoundingClientRect().height
     }
     for (let i = 0; i < COUNT; i++) divs[i]!.style.width = `${WIDTH_BEFORE}px`
     divs[0]!.getBoundingClientRect()
-  })
-  results.push({ label: 'DOM interleaved', ms: tInterleaved, desc: 'Write+read per div (N reflows)' })
+    domInterleavedSink += sum
+  }, DOM_INTERLEAVED_SAMPLE_REPEATS)
+  results.push({ label: 'DOM interleaved', ms: tInterleaved, desc: `Single ${WIDTH_BEFORE}→${WIDTH_AFTER}px batch resize: write + read per div` })
 
   document.body.removeChild(container)
 
@@ -133,7 +156,7 @@ async function run() {
   const layoutMs = tLayout || 0.01 // guard against 0 from low-res timers (Firefox/Safari)
   let html = `
     <div class="summary">
-      <span class="big">${tLayout < 0.01 ? '<0.01' : tLayout.toFixed(2)}ms</span> layout (${COUNT} texts)
+      <span class="big">${tLayout < 0.01 ? '<0.01' : tLayout.toFixed(2)}ms</span> layout / ${COUNT}-text batch
       <span class="sep">|</span>
       ${(tInterleaved / layoutMs).toFixed(0)}× faster than DOM interleaved
       <span class="sep">|</span>
@@ -157,7 +180,7 @@ async function run() {
     </tr>`
   }
   html += '</table>'
-  html += `<p class="note">${COUNT} texts × ${WARMUP} warmup + ${RUNS} measured runs. ${FONT}. Resize ${WIDTH_BEFORE}→${WIDTH_AFTER}px. Visible containers, position:relative.</p>`
+  html += `<p class="note">${COUNT} logical texts per batch, repeated from the shared corpus. ${WARMUP} warmup + ${RUNS} measured runs. Table values are median ms per ${COUNT}-text batch. Layout repeats ${LAYOUT_SAMPLE_REPEATS}× internally and cycles widths ${LAYOUT_SAMPLE_WIDTHS.join('/')}px to stabilize sub-millisecond timings; DOM paths measure one real ${WIDTH_BEFORE}→${WIDTH_AFTER}px resize batch. ${FONT}. Visible containers, position:relative.</p>`
 
   root.innerHTML = html
 
@@ -198,8 +221,22 @@ async function run() {
     const lSegs = pl.widths.length
     const lTimes = { cjk: [] as number[], lat: [] as number[] }
     for (let r = 0; r < 15; r++) {
-      let t0 = performance.now(); for (let j = 0; j < 1000; j++) layout(pc, WIDTH_AFTER, LINE_HEIGHT); lTimes.cjk.push((performance.now() - t0) / 1000)
-      t0 = performance.now(); for (let j = 0; j < 1000; j++) layout(pl, WIDTH_AFTER, LINE_HEIGHT); lTimes.lat.push((performance.now() - t0) / 1000)
+      let cjkSink = 0
+      let t0 = performance.now()
+      for (let j = 0; j < 1000; j++) {
+        const result = layout(pc, WIDTH_AFTER, LINE_HEIGHT)
+        cjkSink += result.height + result.lineCount
+      }
+      lTimes.cjk.push((performance.now() - t0) / 1000)
+
+      let latSink = 0
+      t0 = performance.now()
+      for (let j = 0; j < 1000; j++) {
+        const result = layout(pl, WIDTH_AFTER, LINE_HEIGHT)
+        latSink += result.height + result.lineCount
+      }
+      lTimes.lat.push((performance.now() - t0) / 1000)
+      scalingLayoutSink += cjkSink + latSink + r
     }
 
     cjkRows.push(`<tr>
@@ -216,6 +253,11 @@ async function run() {
       ${cjkRows.join('')}
     </table>
   `
+  root.dataset['topLayoutSink'] = String(topLayoutSink)
+  root.dataset['scalingLayoutSink'] = String(scalingLayoutSink)
+  root.dataset['domBatchSink'] = String(domBatchSink)
+  root.dataset['domInterleavedSink'] = String(domInterleavedSink)
+  console.log('benchmark sinks', { topLayoutSink, scalingLayoutSink, domBatchSink, domInterleavedSink })
 }
 
 run()
