@@ -255,6 +255,11 @@ const forwardStickyGlue = new Set([
 // closely on English prose.
 const leftStickyPunctuation = new Set([
   '.', ',', '!', '?', ':', ';',
+  '\u060C', // ،
+  '\u061B', // ؛
+  '\u061F', // ؟
+  '\u0964', // ।
+  '\u0965', // ॥
   ')', ']', '}',
   '%',
   '”', '’', '»', '›',
@@ -280,6 +285,14 @@ function isForwardStickyClusterSegment(segment: string): boolean {
     if (!kinsokuEnd.has(ch) && !forwardStickyGlue.has(ch)) return false
   }
   return segment.length > 0
+}
+
+function isRepeatedSingleCharRun(segment: string, ch: string): boolean {
+  if (segment.length === 0) return false
+  for (const part of segment) {
+    if (part !== ch) return false
+  }
+  return true
 }
 
 // Unicode Bidirectional Algorithm (UAX #9), forked from pdf.js via Sebastian's
@@ -431,6 +444,17 @@ function buildMergedSegmentation(normalized: string): MergedSegmentation {
     const ws = !s.isWordLike && isWhitespace(s.segment)
 
     if (
+      !s.isWordLike &&
+      !ws &&
+      mergedLen > 0 &&
+      !mergedSpace[mergedLen - 1]! &&
+      s.segment.length === 1 &&
+      s.segment !== '-' &&
+      s.segment !== '—' &&
+      isRepeatedSingleCharRun(mergedTexts[mergedLen - 1]!, s.segment)
+    ) {
+      mergedTexts[mergedLen - 1] += s.segment
+    } else if (
       !s.isWordLike &&
       !ws &&
       mergedLen > 0 &&

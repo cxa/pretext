@@ -39,7 +39,60 @@ type CorpusReport = {
   diffPx?: number
   predictedLineCount?: number
   browserLineCount?: number
+  mismatchCount?: number
+  firstMismatch?: CorpusLineMismatch | null
+  firstBreakMismatch?: CorpusBreakMismatch | null
+  maxLineWidthDrift?: number
+  maxDriftLine?: {
+    line: number
+    drift: number
+    text: string
+    sumWidth: number
+    fullWidth: number
+    segments: Array<{
+      text: string
+      width: number
+      isSpace: boolean
+    }>
+  } | null
   message?: string
+}
+
+type CorpusLineMismatch = {
+  line: number
+  ours: string
+  browser: string
+}
+
+type CorpusBreakMismatch = {
+  line: number
+  oursContext: string
+  browserContext: string
+  deltaText: string
+  reasonGuess: string
+  oursSumWidth: number
+  oursFullWidth: number
+  browserDomWidth: number
+  browserFullWidth: number
+}
+
+type DiagnosticLine = {
+  text: string
+  contentText: string
+  start: number
+  end: number
+  contentEnd: number
+  fullWidth: number
+  rawFullWidth: number
+  sumWidth?: number
+  domWidth?: number
+  rawDomWidth?: number
+}
+
+type DiagnosticUnit = {
+  text: string
+  start: number
+  end: number
 }
 
 declare global {
@@ -72,12 +125,30 @@ const params = new URLSearchParams(location.search)
 const requestId = params.get('requestId') ?? undefined
 const requestedCorpusId = params.get('id')
 const requestedWidth = Number.parseInt(params.get('width') ?? '', 10)
+const diagnosticMode = params.get('diagnostic') ?? 'light'
 
 const reportEl = document.createElement('pre')
 reportEl.id = 'corpus-report'
 reportEl.hidden = true
 reportEl.dataset['ready'] = '0'
 document.body.appendChild(reportEl)
+
+const diagnosticCanvas = document.createElement('canvas')
+const diagnosticCtx = diagnosticCanvas.getContext('2d')!
+const diagnosticDiv = document.createElement('div')
+diagnosticDiv.style.position = 'absolute'
+diagnosticDiv.style.top = '-99999px'
+diagnosticDiv.style.left = '-99999px'
+diagnosticDiv.style.visibility = 'hidden'
+diagnosticDiv.style.pointerEvents = 'none'
+diagnosticDiv.style.boxSizing = 'border-box'
+diagnosticDiv.style.whiteSpace = 'normal'
+diagnosticDiv.style.wordWrap = 'break-word'
+diagnosticDiv.style.overflowWrap = 'break-word'
+diagnosticDiv.style.padding = `${PADDING}px`
+document.body.appendChild(diagnosticDiv)
+
+const diagnosticGraphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
 let corpusList: CorpusMeta[] = []
 let currentMeta: CorpusMeta | null = null
@@ -110,6 +181,292 @@ function getDirection(meta: CorpusMeta): 'ltr' | 'rtl' {
 function estimateBrowserLineCount(actualHeight: number, lineHeight: number): number {
   const contentHeight = Math.max(0, actualHeight - PADDING * 2)
   return Math.max(0, Math.round(contentHeight / lineHeight))
+}
+
+function measureFullTextWidth(text: string, font: string): number {
+  diagnosticCtx.font = font
+  return diagnosticCtx.measureText(text).width
+}
+
+function formatBreakContext(text: string, breakOffset: number, radius = 32): string {
+  const start = Math.max(0, breakOffset - radius)
+  const end = Math.min(text.length, breakOffset + radius)
+  return `${start > 0 ? '…' : ''}${text.slice(start, breakOffset)}|${text.slice(breakOffset, end)}${end < text.length ? '…' : ''}`
+}
+
+function getLineContent(text: string, end: number): { text: string, end: number } {
+  const trimmed = text.trimEnd()
+  return {
+    text: trimmed,
+    end: end - (text.length - trimmed.length),
+  }
+}
+
+function getDiagnosticUnits(prepared: PreparedTextWithSegments): DiagnosticUnit[] {
+  const units: DiagnosticUnit[] = []
+  let offset = 0
+
+  for (let i = 0; i < prepared.segments.length; i++) {
+    const text = prepared.segments[i]!
+    if (prepared.breakableWidths[i] !== null) {
+      let localOffset = 0
+      for (const g of diagnosticGraphemeSegmenter.segment(text)) {
+        const start = offset + localOffset
+        localOffset += g.segment.length
+        units.push({ text: g.segment, start, end: offset + localOffset })
+      }
+    } else {
+      units.push({ text, start: offset, end: offset + text.length })
+    }
+    offset += text.length
+  }
+
+  return units
+}
+
+function getBrowserLines(
+  prepared: PreparedTextWithSegments,
+  div: HTMLDivElement,
+  normalizedText: string,
+  font: string,
+): DiagnosticLine[] {
+  const textNode = div.firstChild
+  if (!(textNode instanceof Text)) return []
+  const safeTextNode: Text = textNode
+
+  const units = getDiagnosticUnits(prepared)
+  const unitRange = document.createRange()
+  const lineRange = document.createRange()
+  const browserLines: DiagnosticLine[] = []
+  let currentLine = ''
+  let currentStart: number | null = null
+  let currentEnd = 0
+  let lastTop: number | null = null
+
+  function pushBrowserLine(): void {
+    if (currentLine.length === 0 || currentStart === null) return
+    const content = getLineContent(currentLine, currentEnd)
+    lineRange.setStart(safeTextNode, currentStart)
+    lineRange.setEnd(safeTextNode, currentEnd)
+    const rawDomWidth = lineRange.getBoundingClientRect().width
+    lineRange.setEnd(safeTextNode, content.end)
+    browserLines.push({
+      text: currentLine,
+      contentText: content.text,
+      start: currentStart,
+      end: currentEnd,
+      contentEnd: content.end,
+      fullWidth: measureFullTextWidth(content.text, font),
+      rawFullWidth: measureFullTextWidth(normalizedText.slice(currentStart, currentEnd), font),
+      domWidth: lineRange.getBoundingClientRect().width,
+      rawDomWidth,
+    })
+  }
+
+  for (const unit of units) {
+    unitRange.setStart(safeTextNode, unit.start)
+    unitRange.setEnd(safeTextNode, unit.end)
+    const rects = unitRange.getClientRects()
+    const rectTop: number | null = rects.length > 0 ? rects[0]!.top : lastTop
+
+    if (rectTop !== null && lastTop !== null && rectTop > lastTop + 0.5) {
+      pushBrowserLine()
+      currentLine = unit.text
+      currentStart = unit.start
+      currentEnd = unit.end
+    } else {
+      if (currentStart === null) currentStart = unit.start
+      currentLine += unit.text
+      currentEnd = unit.end
+    }
+
+    if (rectTop !== null) lastTop = rectTop
+  }
+
+  pushBrowserLine()
+  return browserLines
+}
+
+function getOurLines(
+  prepared: PreparedTextWithSegments,
+  normalizedText: string,
+  maxWidth: number,
+  lineHeight: number,
+  font: string,
+): DiagnosticLine[] {
+  const layoutLines = layoutWithLines(prepared, maxWidth, lineHeight).lines
+  const lines: DiagnosticLine[] = []
+  let rawOffset = 0
+  const segmentStarts = new Map<number, number>()
+
+  let segmentOffset = 0
+  for (let i = 0; i < prepared.segments.length; i++) {
+    segmentStarts.set(segmentOffset, i)
+    segmentOffset += prepared.segments[i]!.length
+  }
+
+  for (const line of layoutLines) {
+    const start = rawOffset
+    const visibleEnd = start + line.text.length
+    let end = visibleEnd
+    while (true) {
+      const nextIndex = segmentStarts.get(end)
+      if (nextIndex === undefined || prepared.isSpace[nextIndex] !== true) break
+      end += prepared.segments[nextIndex]!.length
+    }
+    const content = getLineContent(line.text, visibleEnd)
+    lines.push({
+      text: line.text,
+      contentText: content.text,
+      start,
+      end,
+      contentEnd: content.end,
+      sumWidth: measurePreparedSlice(prepared, start, content.end, font),
+      fullWidth: measureFullTextWidth(content.text, font),
+      rawFullWidth: measureFullTextWidth(normalizedText.slice(start, end), font),
+    })
+    rawOffset = end
+  }
+
+  return lines
+}
+
+function measurePreparedSlice(
+  prepared: PreparedTextWithSegments,
+  start: number,
+  end: number,
+  font: string,
+): number {
+  let total = 0
+  let offset = 0
+
+  for (let i = 0; i < prepared.segments.length; i++) {
+    const text = prepared.segments[i]!
+    const nextOffset = offset + text.length
+    if (nextOffset <= start) {
+      offset = nextOffset
+      continue
+    }
+    if (offset >= end) {
+      break
+    }
+
+    const overlapStart = Math.max(start, offset)
+    const overlapEnd = Math.min(end, nextOffset)
+    if (overlapStart >= overlapEnd) {
+      offset = nextOffset
+      continue
+    }
+
+    const localStart = overlapStart - offset
+    const localEnd = overlapEnd - offset
+    if (localStart === 0 && localEnd === text.length) {
+      total += prepared.widths[i]!
+      offset = nextOffset
+      continue
+    }
+
+    const graphemeWidths = prepared.breakableWidths[i]
+    if (graphemeWidths !== null && graphemeWidths !== undefined) {
+      let graphemeOffset = 0
+      let graphemeIndex = 0
+      for (const g of diagnosticGraphemeSegmenter.segment(text)) {
+        const nextGraphemeOffset = graphemeOffset + g.segment.length
+        if (nextGraphemeOffset > localStart && graphemeOffset < localEnd) {
+          total += graphemeWidths[graphemeIndex]!
+        }
+        graphemeOffset = nextGraphemeOffset
+        graphemeIndex++
+      }
+    } else {
+      total += measureFullTextWidth(text.slice(localStart, localEnd), font)
+    }
+
+    offset = nextOffset
+  }
+
+  return total
+}
+
+function getLineSegments(
+  prepared: PreparedTextWithSegments,
+  start: number,
+  end: number,
+): Array<{ text: string, width: number, isSpace: boolean }> {
+  const segments: Array<{ text: string, width: number, isSpace: boolean }> = []
+  let offset = 0
+  for (let i = 0; i < prepared.segments.length; i++) {
+    const text = prepared.segments[i]!
+    const nextOffset = offset + text.length
+    if (nextOffset > start && offset < end) {
+      segments.push({
+        text,
+        width: prepared.widths[i]!,
+        isSpace: prepared.isSpace[i]!,
+      })
+    }
+    if (offset >= end) break
+    offset = nextOffset
+  }
+  return segments
+}
+
+function classifyBreakMismatch(
+  contentWidth: number,
+  ours: DiagnosticLine | undefined,
+  browser: DiagnosticLine | undefined,
+): string {
+  if (!ours || !browser) return 'line-count mismatch after an earlier break shift'
+
+  const longer = ours.contentEnd >= browser.contentEnd ? ours : browser
+  const longerLabel = longer === ours ? 'ours' : 'browser'
+  const overflow = longer.fullWidth - contentWidth
+  if (Math.abs(overflow) <= 0.05) {
+    return `${longerLabel} keeps text with only ${overflow.toFixed(3)}px overflow`
+  }
+
+  const oursDrift = (ours.sumWidth ?? ours.fullWidth) - ours.fullWidth
+  if (Math.abs(oursDrift) > 0.05) {
+    return `our segment sum drifts from full-string width by ${oursDrift.toFixed(3)}px`
+  }
+
+  if (browser.contentEnd > ours.contentEnd && browser.fullWidth <= contentWidth) {
+    return 'browser fits the longer line while our break logic cuts earlier'
+  }
+
+  return 'different break opportunity around punctuation or shaping context'
+}
+
+function getFirstBreakMismatch(
+  normalizedText: string,
+  contentWidth: number,
+  ourLines: DiagnosticLine[],
+  browserLines: DiagnosticLine[],
+): CorpusBreakMismatch | null {
+  const maxLines = Math.max(ourLines.length, browserLines.length)
+  for (let i = 0; i < maxLines; i++) {
+    const ours = ourLines[i]
+    const browser = browserLines[i]
+
+    if (!ours || !browser || ours.start !== browser.start || ours.contentEnd !== browser.contentEnd) {
+      const oursEnd = ours?.contentEnd ?? ours?.start ?? browser?.start ?? 0
+      const browserEnd = browser?.contentEnd ?? browser?.start ?? ours?.start ?? 0
+      const minEnd = Math.min(oursEnd, browserEnd)
+      const maxEnd = Math.max(oursEnd, browserEnd)
+      return {
+        line: i + 1,
+        oursContext: formatBreakContext(normalizedText, oursEnd),
+        browserContext: formatBreakContext(normalizedText, browserEnd),
+        deltaText: normalizedText.slice(minEnd, maxEnd),
+        reasonGuess: classifyBreakMismatch(contentWidth, ours, browser),
+        oursSumWidth: ours?.sumWidth ?? 0,
+        oursFullWidth: ours?.fullWidth ?? 0,
+        browserDomWidth: browser?.domWidth ?? 0,
+        browserFullWidth: browser?.fullWidth ?? 0,
+      }
+    }
+  }
+  return null
 }
 
 function setReport(report: CorpusReport): void {
@@ -171,6 +528,66 @@ function buildReadyReport(
   })
 }
 
+function addDiagnostics(
+  report: CorpusReport,
+  prepared: PreparedTextWithSegments,
+  font: string,
+  lineHeight: number,
+  contentWidth: number,
+  normalizedText: string,
+): CorpusReport {
+  if (diagnosticMode !== 'full' || report.status !== 'ready') {
+    return report
+  }
+
+  const ourLines = getOurLines(prepared, normalizedText, contentWidth, lineHeight, font)
+  const browserLines = getBrowserLines(prepared, diagnosticDiv, normalizedText, font)
+
+  let mismatchCount = 0
+  let firstMismatch: CorpusLineMismatch | null = null
+  let maxLineWidthDrift = 0
+  let maxDriftLine: CorpusReport['maxDriftLine'] = null
+  const maxLines = Math.max(ourLines.length, browserLines.length)
+
+  for (let i = 0; i < maxLines; i++) {
+    const ours = ourLines[i]
+    const browser = browserLines[i]
+    const oursText = ours?.contentText ?? ''
+    const browserText = browser?.contentText ?? ''
+    if (oursText !== browserText) {
+      mismatchCount++
+      if (firstMismatch === null) {
+        firstMismatch = { line: i + 1, ours: oursText, browser: browserText }
+      }
+    }
+    if (ours !== undefined) {
+      const drift = (ours.sumWidth ?? ours.fullWidth) - ours.fullWidth
+      if (Math.abs(drift) > Math.abs(maxLineWidthDrift)) {
+        maxLineWidthDrift = drift
+        maxDriftLine = {
+          line: i + 1,
+          drift,
+          text: ours.contentText,
+          sumWidth: ours.sumWidth ?? ours.fullWidth,
+          fullWidth: ours.fullWidth,
+          segments: getLineSegments(prepared, ours.start, ours.end),
+        }
+      }
+    }
+  }
+
+  return {
+    ...report,
+    predictedLineCount: ourLines.length,
+    browserLineCount: browserLines.length,
+    mismatchCount,
+    firstMismatch,
+    firstBreakMismatch: getFirstBreakMismatch(normalizedText, contentWidth, ourLines, browserLines),
+    maxLineWidthDrift,
+    maxDriftLine,
+  }
+}
+
 function updateStats(report: CorpusReport, msPretext: number, msDOM: number): void {
   if (report.status !== 'ready') return
   const diff = report.diffPx ?? 0
@@ -192,6 +609,7 @@ function setWidth(width: number): void {
   const lineHeight = getLineHeight(currentMeta)
   const contentWidth = width - PADDING * 2
   const prepared = currentPrepared
+  const normalizedText = prepared.segments.join('')
 
   slider.value = String(width)
   valLabel.textContent = `${width}px`
@@ -202,11 +620,12 @@ function setWidth(width: number): void {
 
   const t0d = performance.now()
   book.style.width = `${width}px`
+  diagnosticDiv.style.width = `${width}px`
   const actualHeight = book.getBoundingClientRect().height
   const msDOM = performance.now() - t0d
 
   const predictedHeight = predicted.height + PADDING * 2
-  const report = buildReadyReport(
+  let report = buildReadyReport(
     currentMeta,
     width,
     font,
@@ -215,6 +634,7 @@ function setWidth(width: number): void {
     actualHeight,
     predicted.lineCount,
   )
+  report = addDiagnostics(report, prepared, font, lineHeight, contentWidth, normalizedText)
 
   window.__CORPUS_DEBUG__ = {
     corpusId: currentMeta.id,
@@ -224,7 +644,7 @@ function setWidth(width: number): void {
     direction: getDirection(currentMeta),
     width,
     contentWidth,
-    getNormalizedText: () => prepared.segments.join(''),
+    getNormalizedText: () => normalizedText,
     layoutWithLines: nextWidth => layoutWithLines(prepared, nextWidth - PADDING * 2, lineHeight),
   }
 
@@ -278,12 +698,18 @@ async function loadCorpus(meta: CorpusMeta): Promise<void> {
   book.style.font = font
   book.style.lineHeight = `${lineHeight}px`
   book.style.padding = `${PADDING}px`
+  diagnosticDiv.style.font = font
+  diagnosticDiv.style.lineHeight = `${lineHeight}px`
+  diagnosticDiv.style.padding = `${PADDING}px`
+  diagnosticDiv.lang = meta.language
+  diagnosticDiv.dir = direction
 
   if ('fonts' in document) {
     await document.fonts.ready
   }
 
   currentPrepared = prepareWithSegments(currentText, font)
+  diagnosticDiv.textContent = currentPrepared.segments.join('')
   setWidth(getInitialWidth(meta))
 }
 

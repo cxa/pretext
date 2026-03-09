@@ -26,6 +26,36 @@ type CorpusReport = {
   diffPx?: number
   predictedLineCount?: number
   browserLineCount?: number
+  mismatchCount?: number
+  firstMismatch?: {
+    line: number
+    ours: string
+    browser: string
+  } | null
+  firstBreakMismatch?: {
+    line: number
+    oursContext: string
+    browserContext: string
+    deltaText: string
+    reasonGuess: string
+    oursSumWidth: number
+    oursFullWidth: number
+    browserDomWidth: number
+    browserFullWidth: number
+  } | null
+  maxLineWidthDrift?: number
+  maxDriftLine?: {
+    line: number
+    drift: number
+    text: string
+    sumWidth: number
+    fullWidth: number
+    segments: Array<{
+      text: string
+      width: number
+      isSpace: boolean
+    }>
+  } | null
   message?: string
 }
 
@@ -51,6 +81,10 @@ function parseBrowser(value: string | null): BrowserKind {
     throw new Error(`Unsupported browser ${browser}; expected chrome or safari`)
   }
   return browser
+}
+
+function hasFlag(name: string): boolean {
+  return process.argv.includes(`--${name}`)
 }
 
 async function loadSources(): Promise<CorpusMeta[]> {
@@ -88,6 +122,35 @@ function printReport(report: CorpusReport): void {
   console.log(
     `width ${width}: diff ${diff > 0 ? '+' : ''}${diff}px | height ${predicted}/${actual} | lines ${lines}`,
   )
+  if (report.maxLineWidthDrift !== undefined) {
+    console.log(`  max line width drift: ${report.maxLineWidthDrift.toFixed(3)}px`)
+  }
+  if (report.maxDriftLine !== null && report.maxDriftLine !== undefined) {
+    console.log(
+      `  drift sample L${report.maxDriftLine.line}: ${report.maxDriftLine.drift.toFixed(3)}px (${report.maxDriftLine.sumWidth.toFixed(3)} vs ${report.maxDriftLine.fullWidth.toFixed(3)})`,
+    )
+    console.log(`  text: ${JSON.stringify(report.maxDriftLine.text.slice(0, 140))}`)
+    if (report.maxDriftLine.segments.length > 0) {
+      const summary = report.maxDriftLine.segments
+        .map(segment => `${JSON.stringify(segment.text)}@${segment.width.toFixed(2)}${segment.isSpace ? ':space' : ''}`)
+        .join(' | ')
+      console.log(`  segments: ${summary}`)
+    }
+  }
+  if (report.firstBreakMismatch !== null && report.firstBreakMismatch !== undefined) {
+    const mismatch = report.firstBreakMismatch
+    console.log(`  break L${mismatch.line}: ${mismatch.reasonGuess}`)
+    console.log(`  delta: ${JSON.stringify(mismatch.deltaText)}`)
+    console.log(`  ours:    ${mismatch.oursContext}`)
+    console.log(`  browser: ${mismatch.browserContext}`)
+    console.log(
+      `  widths: ours sum/full ${mismatch.oursSumWidth.toFixed(3)}/${mismatch.oursFullWidth.toFixed(3)} | browser dom/full ${mismatch.browserDomWidth.toFixed(3)}/${mismatch.browserFullWidth.toFixed(3)}`,
+    )
+  } else if (report.firstMismatch !== null && report.firstMismatch !== undefined) {
+    console.log(`  first mismatch L${report.firstMismatch.line}`)
+    console.log(`  ours:    ${JSON.stringify(report.firstMismatch.ours.slice(0, 120))}`)
+    console.log(`  browser: ${JSON.stringify(report.firstMismatch.browser.slice(0, 120))}`)
+  }
 }
 
 let serverProcess: ChildProcess | null = null
@@ -106,6 +169,7 @@ if (meta === undefined) {
 }
 
 const session = createBrowserSession(browser)
+const diagnose = hasFlag('diagnose')
 
 try {
   const pageServer = await ensurePageServer(port, '/corpus', process.cwd())
@@ -119,6 +183,7 @@ try {
       `${baseUrl}?id=${encodeURIComponent(meta.id)}` +
       `&width=${width}` +
       `&report=1` +
+      `&diagnostic=${diagnose ? 'full' : 'light'}` +
       `&requestId=${encodeURIComponent(requestId)}`
 
     const report = await loadHashReport<CorpusReport>(session, url, requestId, browser)

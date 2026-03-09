@@ -103,6 +103,16 @@ describe('prepare invariants', () => {
     expect(prepared.segments).toEqual(['hello.'])
   })
 
+  test('keeps arabic punctuation attached to the preceding word', () => {
+    const prepared = prepareWithSegments('مرحبا، عالم؟', FONT)
+    expect(prepared.segments).toEqual(['مرحبا،', ' ', 'عالم؟'])
+  })
+
+  test('keeps devanagari danda punctuation attached to the preceding word', () => {
+    const prepared = prepareWithSegments('नमस्ते। दुनिया॥', FONT)
+    expect(prepared.segments).toEqual(['नमस्ते।', ' ', 'दुनिया॥'])
+  })
+
   test('keeps opening quotes attached to the following word', () => {
     const prepared = prepareWithSegments('“Whenever', FONT)
     expect(prepared.segments).toEqual(['“Whenever'])
@@ -126,6 +136,11 @@ describe('prepare invariants', () => {
   test('keeps em dashes breakable', () => {
     const prepared = prepareWithSegments('universe—so', FONT)
     expect(prepared.segments).toEqual(['universe', '—', 'so'])
+  })
+
+  test('coalesces repeated punctuation runs into a single segment', () => {
+    const prepared = prepareWithSegments('=== heading ===', FONT)
+    expect(prepared.segments).toEqual(['===', ' ', 'heading', ' ', '==='])
   })
 
   test('applies CJK and Hangul punctuation attachment rules', () => {

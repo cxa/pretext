@@ -31,6 +31,7 @@ Machine-readable metadata lives in `sources.json`.
 Useful commands:
 
 - `bun run corpus-check --id=ko-unsu-joh-eun-nal 300 600 800`
+- `bun run corpus-check --id=ar-risalat-al-ghufran-part-1 --diagnose 300`
 - `bun run corpus-sweep --id=hi-eidgah --start=300 --end=900 --step=10`
 - `bun run corpus-sweep --all --start=300 --end=900 --step=10`
 
