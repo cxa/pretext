@@ -607,6 +607,7 @@ function mergeGlueConnectedTextRuns(segmentation: MergedSegmentation): MergedSeg
   }
 }
 
+
 function buildMergedSegmentation(normalized: string, profile: AnalysisProfile): MergedSegmentation {
   const wordSegmenter = getSharedWordSegmenter()
   let mergedLen = 0

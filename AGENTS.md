@@ -12,6 +12,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - `bun run corpus-check --id=... --font='20px ...' --lineHeight=32` — corpus spot check with optional font override
 - `bun run corpus-sweep --id=... --samples=9 --font='20px ...'` — sampled width sweep; use this before a dense sweep on large corpora
 - `bun run corpus-font-matrix --id=... --samples=5` — sampled cross-font check for one checked-in corpus
+- `bun run corpus-taxonomy --id=... 300 450 600` — classify current mismatches by rough steering bucket (`edge-fit`, `glue-policy`, `boundary-discovery`, `shaping-context`, etc.) using the full browser diagnostics
 - `bun run gatsby-check` / `:safari` — Gatsby canary diagnostics
 - `bun run gatsby-sweep --start=300 --end=900 --step=10` — fast Gatsby width sweep; add `--diagnose` to rerun mismatching widths through the slow checker
 - `bun run probe-check --text='...' --width=320 --font='20px ...' --dir=rtl --lang=ar --method=range|span` — isolate a single snippet in the real browser and choose the browser-line extraction method explicitly

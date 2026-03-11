@@ -9,6 +9,15 @@ Use this when a corpus or probe disagrees with the engine and the question is
 `corpora/STATUS.md` stays the current scorecard.
 This file is the shared vocabulary for deciding what kind of work should happen next.
 
+Useful command:
+
+```sh
+bun run corpus-taxonomy --id=ja-rashomon 330 450
+```
+
+That runner is intentionally rough. It is there to turn repeated browser diagnostics
+into a steering summary, not to replace manual judgment on a new mismatch.
+
 ## Categories
 
 ### `corpus-dirty`
@@ -163,7 +172,9 @@ When a new mismatch shows up:
 ## Current Frontier
 
 The main current steering classes are:
-- Japanese: mostly `edge-fit` plus some `boundary-discovery` / `glue-policy`
+- Japanese: mostly `edge-fit` plus some `shaping-context`
 - Myanmar: mostly `boundary-discovery` / `glue-policy`, with some remaining local disagreement that is not yet a safe keep
 - Mixed app text `710px`: `diagnostic-sensitivity`
 - Arabic long-form: coarse field is clean; remaining fine field is mostly `edge-fit`
+- Chinese: mostly `glue-policy` around punctuation/quote clusters, plus some Chromium-only edge behavior
+- Urdu: currently behaving more like `boundary-discovery` / shaping-sensitive break policy than dirty data or simple edge-fit

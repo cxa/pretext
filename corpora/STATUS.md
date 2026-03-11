@@ -82,6 +82,9 @@ These are sampled, not exhaustive.
 Useful commands:
 
 ```sh
+bun run corpus-taxonomy --id=ja-rashomon 330 450
+bun run corpus-taxonomy --id=zh-zhufu 300 450
+bun run corpus-taxonomy --id=ur-chughd 300 340 600
 bun run corpus-check --id=ko-unsu-joh-eun-nal 300 600 800
 bun run corpus-check --id=ja-kumo-no-ito 300 600 800
 bun run corpus-check --id=ja-rashomon 300 600 800
