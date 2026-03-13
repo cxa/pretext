@@ -21,7 +21,7 @@ This page's made to show off our layout APIs:
 - The first visible render now waits for both fonts and hull preload, so it uses the real geometry from the start.
 - There is no DOM text measurement loop feeding layout.
 */
-import { layoutNextLine, layoutWithLines, prepareWithSegments, type LayoutCursor, type LayoutLine, type PreparedTextWithSegments } from '../src/layout.ts'
+import { layoutNextLine, prepareWithSegments, walkLineRanges, type LayoutCursor, type PreparedTextWithSegments } from '../src/layout.ts'
 import { BODY_COPY } from './dynamic-layout-text.ts'
 import openaiLogoUrl from './assets/openai-symbol.svg'
 import claudeLogoUrl from './assets/claude-symbol.svg'
@@ -65,7 +65,6 @@ type PositionedLine = {
   x: number
   y: number
   width: number
-  tooltip: string
   text: string
 }
 
@@ -120,6 +119,7 @@ type DomCache = {
 }
 
 const preparedByKey = new Map<string, PreparedTextWithSegments>()
+const measuredTextWidthByKey = new Map<string, number>()
 const scheduled = { value: false }
 const events: { mousemove: MouseEvent | null; click: MouseEvent | null; blur: boolean } = {
   mousemove: null,
@@ -143,6 +143,14 @@ const domCache: DomCache = {
   bodyLines: [],
 }
 let mounted = false
+
+function createMeasurementContext(): OffscreenCanvasRenderingContext2D {
+  const ctx = new OffscreenCanvas(1, 1).getContext('2d')
+  if (ctx === null) throw new Error('2d context unavailable for dynamic-layout text measurement')
+  return ctx
+}
+
+const measurementCtx = createMeasurementContext()
 
 function createHeadline(): HTMLHeadingElement {
   const element = document.createElement('h1')
@@ -197,6 +205,25 @@ function getPrepared(text: string, font: string): PreparedTextWithSegments {
   const prepared = prepareWithSegments(text, font)
   preparedByKey.set(key, prepared)
   return prepared
+}
+
+function measureSingleLineTextWidth(text: string, font: string): number {
+  const key = `${font}::${text}`
+  const cached = measuredTextWidthByKey.get(key)
+  if (cached !== undefined) return cached
+
+  measurementCtx.font = font
+  const width = measurementCtx.measureText(text).width
+  measuredTextWidthByKey.set(key, width)
+  return width
+}
+
+function headlineBreaksInsideWord(prepared: PreparedTextWithSegments, maxWidth: number): boolean {
+  let breaksInsideWord = false
+  walkLineRanges(prepared, maxWidth, line => {
+    if (line.end.graphemeIndex !== 0) breaksInsideWord = true
+  })
+  return breaksInsideWord
 }
 
 function getObstacleIntervals(obstacle: BandObstacle, bandTop: number, bandBottom: number): Interval[] {
@@ -267,10 +294,6 @@ function layoutColumn(
       x: Math.round(slot.left),
       y: Math.round(lineTop),
       width: line.width,
-      tooltip:
-        `${line.start.segmentIndex}:${line.start.graphemeIndex} → ` +
-        `${line.end.segmentIndex}:${line.end.graphemeIndex} • ${line.width.toFixed(2)}px` +
-        (line.trailingDiscretionaryHyphen ? ' • discretionary hyphen' : ''),
       text: line.text,
     })
 
@@ -315,7 +338,7 @@ function projectBodyLines(lines: PositionedLine[], className: string, font: stri
     const element = domCache.bodyLines[startIndex + offset]!
     element.className = className
     element.textContent = line.text
-    element.title = line.tooltip
+    element.title = ''
     element.style.left = `${line.x}px`
     element.style.top = `${line.y}px`
     element.style.font = font
@@ -354,22 +377,6 @@ function projectStaticLayout(layout: PageLayout, pageHeight: number): void {
   domCache.credit.style.lineHeight = `${CREDIT_LINE_HEIGHT}px`
 }
 
-function getPreparedSingleLineWidth(text: string, font: string, lineHeight: number): number {
-  const result = layoutWithLines(getPrepared(text, font), 10_000, lineHeight)
-  return result.lines[0]!.width
-}
-
-function titleLayoutKeepsWholeWords(lines: LayoutLine[]): boolean {
-  const words = new Set(HEADLINE_WORDS)
-  for (const line of lines) {
-    const tokens = line.text.split(' ').filter(Boolean)
-    for (const token of tokens) {
-      if (!words.has(token)) return false
-    }
-  }
-  return true
-}
-
 function fitHeadlineFontSize(headlineWidth: number, pageWidth: number): number {
   const maxSize = Math.min(94.4, Math.max(55.2, pageWidth * 0.055))
   let low = Math.max(22, pageWidth * 0.026)
@@ -378,17 +385,16 @@ function fitHeadlineFontSize(headlineWidth: number, pageWidth: number): number {
 
   for (let iteration = 0; iteration < 10; iteration++) {
     const size = (low + high) / 2
-    const lineHeight = Math.round(size * 0.92)
     const font = `700 ${size}px ${HEADLINE_FONT_FAMILY}`
     let widestWord = 0
 
     for (const word of HEADLINE_WORDS) {
-      const width = getPreparedSingleLineWidth(word, font, lineHeight)
+      const width = measureSingleLineTextWidth(word, font)
       if (width > widestWord) widestWord = width
     }
 
-    const titleLayout = layoutWithLines(getPrepared(HEADLINE_TEXT, font), headlineWidth, lineHeight)
-    if (widestWord <= headlineWidth - 8 && titleLayoutKeepsWholeWords(titleLayout.lines)) {
+    const headlinePrepared = getPrepared(HEADLINE_TEXT, font)
+    if (widestWord <= headlineWidth - 8 && !headlineBreaksInsideWord(headlinePrepared, headlineWidth)) {
       best = size
       low = size
     } else {
@@ -588,7 +594,7 @@ function evaluateLayout(
     verticalPadding: Math.round(lineHeight * 0.3),
   }
 
-  const creditWidth = Math.ceil(getPreparedSingleLineWidth(CREDIT_TEXT, CREDIT_FONT, CREDIT_LINE_HEIGHT))
+  const creditWidth = Math.ceil(measureSingleLineTextWidth(CREDIT_TEXT, CREDIT_FONT))
   const creditBlocked = getObstacleIntervals(
     openaiObstacle,
     creditRegion.y,

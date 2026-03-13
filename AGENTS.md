@@ -34,7 +34,6 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - `pages/demo.ts` — manual line-placement demo built from repeated `layoutNextLine()` calls
 - `pages/dynamic-layout.ts` — fixed-height editorial spread with a continuous two-column flow, obstacle-aware title routing, and live logo-driven reflow
 - `pages/chronicle.ts` — poster-like editorial spread with procedural contour art and text routed around fixed copy blocks
-- `pages/blob-lab.ts` — seeded polygon-blob playground; contours are pure functions of viewport size, family, and seed
 - `pages/sync.ts` — synced multi-view reflow demo that maps one pane's scroll anchor onto the others via line-start cursors; currently broken and left for later diagnosis
 - `pages/line-utils.ts` — browser-demo helper that collects whole line arrays via repeated `layoutNextLine()` calls
 
@@ -65,6 +64,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - Emoji correction is auto-detected per font size, constant per emoji grapheme, and effectively font-independent.
 - Bidi levels now stay on the rich `prepareWithSegments()` path. The opaque fast `prepare()` handle should not pay for bidi metadata that `layout()` does not consume.
 - Supported CSS target is the common app-text configuration: `white-space: normal`, `word-break: normal`, `overflow-wrap: break-word`, `line-break: auto`.
+- That default target means narrow widths may still break inside words, but only at grapheme boundaries. Keep the core engine honest to that behavior; if an editorial page wants stricter whole-word handling, layer it on top in userland instead of quietly changing the library default.
 - `system-ui` is unsafe for accuracy; canvas and DOM can resolve different fonts on macOS.
 - Thai historically mismatched because CSS and `Intl.Segmenter` use different internal dictionaries; keep it in the browser sweep when changing segmentation rules.
 - HarfBuzz probes need explicit LTR to avoid wrong direction on isolated Arabic words.

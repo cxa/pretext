@@ -118,7 +118,7 @@ export function getRectIntervalsForBand(
 }
 
 // Given one allowed horizontal interval and a set of blocked intervals,
-// carve out the remaining usable text slots for one row band.
+// carve out the remaining usable text slots for one text line band.
 //
 // Example:
 // - base:    80..420

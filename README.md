@@ -67,6 +67,7 @@ Tested across 4 fonts (Helvetica Neue, Georgia, Verdana, Courier New) × 8 sizes
 ## Known limitations
 
 - **CSS config**: targets a common app-text configuration (`white-space: normal`, `word-break: normal`, `overflow-wrap: break-word`, `line-break: auto`). Source newlines are treated as collapsible whitespace, not explicit `<br>`/paragraph breaks. Other configurations (`break-all`, `keep-all`, `strict`, `loose`, `anywhere`) are untested.
+- **In-word breaks**: because the default target includes `overflow-wrap: break-word`, very narrow widths may break inside words, but only at grapheme boundaries. The engine will not cut through raw UTF-16/code-unit boundaries or split an emoji cluster in half.
 - **`line-height`**: the library does not infer CSS line height. Pass the exact value you render with into `layout()` / `layoutWithLines()`. `line-height: normal` differs across fonts and browsers.
 - **Soft hyphens**: unbroken soft hyphens stay invisible, but if the engine chooses that break, the rich APIs expose a visible trailing `-`. `LayoutLine.trailingDiscretionaryHyphen` tells you when that hyphen was inserted by layout rather than coming from source text.
 - **`system-ui` font**: canvas and DOM resolve this CSS keyword to different font variants at certain sizes on macOS. Use a named font (Inter, Helvetica, Arial, etc.) for guaranteed accuracy. See [RESEARCH.md](RESEARCH.md#discovery-system-ui-font-resolution-mismatch).
@@ -107,7 +108,6 @@ Pages:
 - `/demo.html` — manual line-placement demo streamed from repeated `layoutNextLine()` calls
 - `/dynamic-layout.html` — fixed-height editorial spread with a continuous two-column flow, obstacle-aware title routing, and live logo-driven reflow
 - `/chronicle.html` — poster-like editorial spread with procedural contour art and text routed around fixed copy blocks
-- `/blob-lab.html` — grid of seeded polygon blobs that warp as a pure function of viewport size
 - `/accuracy.html` — sweep across fonts, sizes, widths, i18n texts
 - `/benchmark.html` — performance comparison
 - `/bubbles.html` — bubble shrinkwrap demo
